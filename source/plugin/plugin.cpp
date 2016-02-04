@@ -149,13 +149,24 @@ SCSAPI_VOID telemetry_frame_end(const scs_event_t /*event*/, const void *const /
   char* data = cJSON_PrintUnformatted(root);
   size_t data_len = strlen(data);
   
+  assert(data_len < 65535);
+  
+  unsigned char header[4] = {
+    1,  // Message Version
+    0,  // Reserved
+    (data_len >> 8) & 0xFF, // Length High
+    data_len & 0xFF  // Length Low
+  };
+  
   for (std::list<int>::iterator it = client_sockets.begin(); it != client_sockets.end(); ++it)
   {
-    if (send(*it, data, data_len, 0) < 0)
+    if (
+      (send(*it, (char*)header, sizeof(header), 0) < 0) ||
+      (send(*it, data, data_len, 0) < 0))
     {
       closesocket(*it);
-      it = client_sockets.erase(it);
-      --it;
+      it = client_sockets.erase(it); // Moves to the socket after
+      --it; // Don't skip the socket with the for loop ++
     }
   }
   free(data);  
@@ -263,6 +274,17 @@ SCSAPI_VOID telemetry_configuration(const scs_event_t /*event*/, const void *con
   }
 }
 
+SCSAPI_VOID game_start(const scs_event_t /*event*/, const void *const /*event_info*/, const scs_context_t /*context*/)
+{
+  strcpy(cJSON_GetObjectItem(root, "state")->valuestring, "drive");
+}
+
+SCSAPI_VOID game_pause(const scs_event_t /*event*/, const void *const /*event_info*/, const scs_context_t /*context*/)
+{
+  strcpy(cJSON_GetObjectItem(root, "state")->valuestring, "pause");
+}
+
+
 SCSAPI_RESULT scs_telemetry_init(const scs_u32_t version, const scs_telemetry_init_params_t *const params)
 {
 	if (version != SCS_TELEMETRY_VERSION_1_00) {
@@ -280,6 +302,10 @@ SCSAPI_RESULT scs_telemetry_init(const scs_u32_t version, const scs_telemetry_in
       SCS_TELEMETRY_EVENT_frame_start, telemetry_frame_start, NULL) == SCS_RESULT_ok) &&
     (version_params->register_for_event(
       SCS_TELEMETRY_EVENT_frame_end, telemetry_frame_end, NULL) == SCS_RESULT_ok) &&
+    (version_params->register_for_event(
+      SCS_TELEMETRY_EVENT_paused, game_pause, NULL) == SCS_RESULT_ok) &&
+    (version_params->register_for_event(
+      SCS_TELEMETRY_EVENT_started, game_start, NULL) == SCS_RESULT_ok) &&
     (version_params->register_for_event(
       SCS_TELEMETRY_EVENT_configuration, telemetry_configuration, NULL) == SCS_RESULT_ok);
   
@@ -406,6 +432,8 @@ SCSAPI_RESULT scs_telemetry_init(const scs_u32_t version, const scs_telemetry_in
     game_log(SCS_LOG_TYPE_error, LOG_PREFIX "Failed to create config JSON object");
 		return SCS_RESULT_generic_error;
   }
+  
+  cJSON_AddStringToObject(root, "state", "startup");
 
   
   if (!wsa_init())
